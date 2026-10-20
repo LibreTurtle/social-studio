@@ -1,7 +1,14 @@
+CREATE TYPE social_platform AS ENUM ('X', 'LINKEDIN', 'TELEGRAM');
+CREATE TYPE content_tone AS ENUM ('CONCISE', 'PROFESSIONAL', 'CONVERSATIONAL');
+CREATE TYPE post_source_type AS ENUM ('URL', 'MARKDOWN');
+CREATE TYPE variant_status AS ENUM ('DRAFT', 'APPROVED', 'REJECTED', 'PUBLISHED');
+CREATE TYPE schedule_status AS ENUM ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED');
+CREATE TYPE publish_attempt_status AS ENUM ('SUCCESS', 'FAILED');
+
 CREATE TABLE constraint_profiles (
-    platform TEXT PRIMARY KEY CHECK (platform IN ('X', 'LINKEDIN', 'TELEGRAM')),
+    platform social_platform PRIMARY KEY,
     max_length INTEGER NOT NULL CHECK (max_length > 0),
-    tone TEXT NOT NULL CHECK (tone IN ('CONCISE', 'PROFESSIONAL', 'CONVERSATIONAL')),
+    tone content_tone NOT NULL,
     max_hashtags INTEGER NOT NULL CHECK (max_hashtags >= 0)
 );
 
@@ -12,7 +19,7 @@ INSERT INTO constraint_profiles (platform, max_length, tone, max_hashtags) VALUE
 
 CREATE TABLE posts (
     id UUID PRIMARY KEY DEFAULT uuidv7(),
-    source_type TEXT NOT NULL CHECK (source_type IN ('URL', 'MARKDOWN')),
+    source_type post_source_type NOT NULL,
     source_url TEXT,
     content TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -23,9 +30,9 @@ CREATE TABLE posts (
 CREATE TABLE variants (
     id UUID PRIMARY KEY DEFAULT uuidv7(),
     post_id UUID NOT NULL REFERENCES posts(id),
-    platform TEXT NOT NULL REFERENCES constraint_profiles(platform),
+    platform social_platform NOT NULL REFERENCES constraint_profiles(platform),
     content TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('DRAFT', 'APPROVED', 'REJECTED', 'PUBLISHED')),
+    status variant_status NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     version BIGINT NOT NULL DEFAULT 1
@@ -35,7 +42,7 @@ CREATE TABLE schedules (
     id UUID PRIMARY KEY DEFAULT uuidv7(),
     variant_id UUID NOT NULL REFERENCES variants(id),
     scheduled_at TIMESTAMPTZ NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+    status schedule_status NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     version BIGINT NOT NULL DEFAULT 1,
@@ -47,7 +54,7 @@ CREATE TABLE publish_attempts (
     schedule_id UUID NOT NULL REFERENCES schedules(id),
     variant_id UUID NOT NULL REFERENCES variants(id),
     idempotency_key TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL CHECK (status IN ('SUCCESS', 'FAILED')),
+    status publish_attempt_status NOT NULL,
     external_post_id TEXT,
     error_message TEXT,
     attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

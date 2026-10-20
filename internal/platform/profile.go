@@ -4,19 +4,21 @@ import (
 	"fmt"
 	"regexp"
 	"unicode"
+
+	"github.com/LibreTurtle/social-studio/internal/domain"
 )
 
-type Name string
-type Tone string
+type Name = domain.Platform
+type Tone = domain.Tone
 
 const (
-	X        Name = "X"
-	LinkedIn Name = "LINKEDIN"
-	Telegram Name = "TELEGRAM"
+	X        Name = domain.PlatformX
+	LinkedIn Name = domain.PlatformLinkedIn
+	Telegram Name = domain.PlatformTelegram
 
-	Concise        Tone = "CONCISE"
-	Professional   Tone = "PROFESSIONAL"
-	Conversational Tone = "CONVERSATIONAL"
+	Concise        Tone = domain.ToneConcise
+	Professional   Tone = domain.ToneProfessional
+	Conversational Tone = domain.ToneConversational
 )
 
 type Profile struct {

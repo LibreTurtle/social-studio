@@ -1,0 +1,99 @@
+name: Container CI and release
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Test and verify the full Compose stack
+    runs-on: ubuntu-latest
+    env:
+      DB_ADMIN_PASSWORD: ci_only_admin_password_9b80b6d4
+      DB_PASSWORD: ci_only_app_password_57bc2f81
+      SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Require Compose OCI artifact support
+        shell: bash
+        run: |
+          compose_version="$(docker compose version --short | sed 's/^v//; s/+.*//')"
+          if [[ "$(printf '%s\n' 2.34.0 "$compose_version" | sort -V | head -n 1)" != "2.34.0" ]]; then
+            echo "Docker Compose 2.34.0 or newer is required (found ${compose_version})." >&2
+            exit 1
+          fi
+
+      - name: Run Go tests in the Docker build
+        run: docker build --pull --target test --tag social-studio:test .
+
+      - name: Start the full stack and wait for health
+        run: docker compose up --build --detach --wait --wait-timeout 120
+
+      - name: Check the API health endpoint
+        run: curl --fail --show-error --silent http://127.0.0.1:8080/healthz
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+  publish:
+    name: Publish versioned GHCR packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DB_ADMIN_PASSWORD: ci_only_admin_password_9b80b6d4
+      DB_PASSWORD: ci_only_app_password_57bc2f81
+      SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Normalize image namespace
+        id: namespace
+        shell: bash
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Remove the leading v from the Git tag
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ -z "$version" || "$version" == "$GITHUB_REF_NAME" ]]; then
+            echo "Release tags must start with v." >&2
+            exit 1
+          fi
+          if [[ ! "$version" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "The release version is not a valid Docker tag: ${version}" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the API image and full-stack Compose package
+        env:
+          SOCIAL_STUDIO_IMAGE: ghcr.io/${{ steps.namespace.outputs.owner }}/social-studio:${{ steps.version.outputs.value }}
+          FULL_STACK_PACKAGE: ghcr.io/${{ steps.namespace.outputs.owner }}/social-studio-full:${{ steps.version.outputs.value }}
+        run: docker compose publish --yes --app --resolve-image-digests "$FULL_STACK_PACKAGE"

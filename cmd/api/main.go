@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"github.com/LibreTurtle/social-studio/internal/db"
 	"github.com/LibreTurtle/social-studio/internal/httpapi"
 	"github.com/LibreTurtle/social-studio/internal/logging"
-	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -26,10 +24,6 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return errors.New("environment file could not be loaded")
-	}
-
 	database, err := db.Connect(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return err

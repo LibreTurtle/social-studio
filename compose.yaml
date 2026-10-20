@@ -1,0 +1,121 @@
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${DB_ADMIN_PASSWORD:?Set DB_ADMIN_PASSWORD in .env for self-hosted PostgreSQL}"
+      POSTGRES_DB: "${POSTGRES_DB:-social_studio}"
+      DB_USER: "${DB_USER:-social_studio}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    shm_size: 128mb
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  db-init:
+    image: postgres:18-alpine
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        psql --host=db --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" \
+          --set=ON_ERROR_STOP=1 \
+          --set=db_user="$$DB_USER" \
+          --set=db_password="$$DB_PASSWORD" <<'SQL'
+        SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'db_user', :'db_password')
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'db_user')
+        \gexec
+        SELECT format('GRANT USAGE, CREATE ON SCHEMA public TO %I', :'db_user')
+        \gexec
+        SQL
+    environment:
+      POSTGRES_USER: postgres
+      PGPASSWORD: "${DB_ADMIN_PASSWORD:?Set DB_ADMIN_PASSWORD in .env for self-hosted PostgreSQL}"
+      POSTGRES_DB: "${POSTGRES_DB:-social_studio}"
+      DB_USER: "${DB_USER:-social_studio}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - database
+    restart: "no"
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SOURCE_REPOSITORY: "${SOURCE_REPOSITORY:-local}"
+    image: "${SOCIAL_STUDIO_IMAGE:-social-studio-api:local}"
+    pull_policy: build
+    entrypoint: ["/app/migrate"]
+    command: ["up"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL:-postgresql://${DB_USER:-social_studio}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-social_studio}?sslmode=disable}"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    networks:
+      - database
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SOURCE_REPOSITORY: "${SOURCE_REPOSITORY:-local}"
+    image: "${SOCIAL_STUDIO_IMAGE:-social-studio-api:local}"
+    pull_policy: build
+    ports:
+      - target: 8080
+        published: "${PORT:-8080}"
+        protocol: tcp
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://${DB_USER:-social_studio}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-social_studio}?sslmode=disable}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    pids_limit: 128
+    networks:
+      - database
+      - egress
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  postgres-data:
+
+networks:
+  database:
+    internal: true
+  egress:

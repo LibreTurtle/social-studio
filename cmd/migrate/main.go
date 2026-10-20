@@ -10,16 +10,11 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/joho/godotenv"
 )
 
 func main() {
 	logger := logging.New()
 	slog.SetDefault(logger)
-	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
-		logger.Error("environment file could not be loaded", "error", err)
-		os.Exit(1)
-	}
 	if len(os.Args) != 2 {
 		logger.Error("migration command required", "usage", "migrate <up | down>")
 		os.Exit(2)
