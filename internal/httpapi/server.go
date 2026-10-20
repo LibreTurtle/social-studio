@@ -1,70 +1,54 @@
 package httpapi
 
 import (
-	"encoding/json/v2"
+	"context"
 	"log/slog"
 	"net/http"
-	"sort"
 
+	"github.com/LibreTurtle/social-studio/internal/generation"
 	"github.com/LibreTurtle/social-studio/internal/middleware"
-	"github.com/LibreTurtle/social-studio/internal/platform"
+	"github.com/LibreTurtle/social-studio/internal/post"
 )
 
-type envelope struct {
-	Success bool         `json:"success"`
-	Message string       `json:"message"`
-	Data    any          `json:"data,omitempty"`
-	Error   *errorDetail `json:"error,omitempty"`
-}
-
-type errorDetail struct {
-	Code    string `json:"code"`
-	Details any    `json:"details,omitempty"`
-}
-
 type Server struct {
-	logger *slog.Logger
+	logger      *slog.Logger
+	posts       PostService
+	generations GenerationService
 }
 
-func NewServer(logger *slog.Logger) http.Handler {
-	server := &Server{logger: logger}
+type PostService interface {
+	Create(context.Context, post.CreateRequest) (post.Post, error)
+}
+type GenerationService interface {
+	Generate(context.Context, generation.Request) (generation.Result, error)
+	Get(string) (generation.Result, error)
+	Candidates(string) ([]generation.Candidate, error)
+	Select(string, string) (generation.Candidate, error)
+}
+type Dependencies struct {
+	Posts       PostService
+	Generations GenerationService
+}
+
+func NewServer(logger *slog.Logger, dependencies ...Dependencies) http.Handler {
+	server := &Server{logger: loggerOrDefault(logger)}
+	if len(dependencies) != 0 {
+		server.posts, server.generations = dependencies[0].Posts, dependencies[0].Generations
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /api/v1/platforms", server.listPlatforms)
-	return middleware.RequestID(mux)
+	mux.HandleFunc("POST /api/v1/posts", server.createPost)
+	mux.HandleFunc("POST /api/v1/variants", server.generateVariants)
+	mux.HandleFunc("GET /api/v1/generations/{sessionID}", server.getGeneration)
+	mux.HandleFunc("GET /api/v1/generations/{sessionID}/candidates", server.getCandidates)
+	mux.HandleFunc("POST /api/v1/generations/{sessionID}/selection", server.selectCandidate)
+	return middleware.RequestID(server.accessLog(mux))
 }
 
-func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	s.logger.InfoContext(r.Context(), "health check served",
-		"request_id", middleware.RequestIDFromContext(r.Context()),
-		"method", r.Method,
-		"path", r.URL.Path,
-	)
-	s.writeJSON(w, r, http.StatusOK, envelope{Success: true, Message: "Service is healthy", Data: map[string]string{"status": "ok"}})
-}
-
-func (s *Server) listPlatforms(w http.ResponseWriter, r *http.Request) {
-	profiles := platform.DefaultProfiles()
-	list := make([]platform.Profile, 0, len(profiles))
-	for _, profile := range profiles {
-		list = append(list, profile)
+func loggerOrDefault(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
-	s.logger.InfoContext(r.Context(), "platform profiles retrieved",
-		"request_id", middleware.RequestIDFromContext(r.Context()),
-		"count", len(list),
-	)
-	s.writeJSON(w, r, http.StatusOK, envelope{Success: true, Message: "Platform profiles retrieved", Data: list})
-}
-
-func (s *Server) writeJSON(w http.ResponseWriter, r *http.Request, status int, body envelope) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.MarshalWrite(w, body); err != nil {
-		s.logger.ErrorContext(r.Context(), "HTTP response write failed",
-			"request_id", middleware.RequestIDFromContext(r.Context()),
-			"status", status,
-			"error", err,
-		)
-	}
+	return logger
 }

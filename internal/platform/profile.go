@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"unicode"
+	"unicode/utf16"
 
 	"github.com/LibreTurtle/social-studio/internal/domain"
 )
@@ -53,11 +54,17 @@ func Validate(content string, profile Profile, requiredHashtags int) []Violation
 		return []Violation{{Code: "CONTENT_REQUIRED", Message: "Generated content must not be blank"}}
 	}
 	var violations []Violation
-	length := len([]rune(content))
+	length := len(utf16.Encode([]rune(content)))
 	if length > profile.MaxLength {
 		violations = append(violations, Violation{Code: "MAX_LENGTH", Message: fmt.Sprintf("Content has %d characters; maximum allowed is %d", length, profile.MaxLength)})
 	}
-	count := len(hashtagPattern.FindAllString(content, -1))
+	count := 0
+	for _, match := range hashtagPattern.FindAllStringIndex(content, -1) {
+		if match[0] > 0 && isASCIIWord(content[match[0]-1]) {
+			continue
+		}
+		count++
+	}
 	if count > profile.MaxHashtags {
 		violations = append(violations, Violation{Code: "MAX_HASHTAGS", Message: fmt.Sprintf("Content has %d hashtags; maximum allowed is %d", count, profile.MaxHashtags)})
 	}
@@ -65,6 +72,10 @@ func Validate(content string, profile Profile, requiredHashtags int) []Violation
 		violations = append(violations, Violation{Code: "WRONG_HASHTAG_COUNT", Message: fmt.Sprintf("Content contains %d hashtags; requested count is %d", count, requiredHashtags)})
 	}
 	return violations
+}
+
+func isASCIIWord(character byte) bool {
+	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_'
 }
 
 func allWhitespace(value string) bool {

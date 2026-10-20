@@ -34,3 +34,16 @@ func TestValidateRejectsBlankAndWrongRequestedHashtagCount(t *testing.T) {
 		t.Fatalf("hashtag violations = %v", got)
 	}
 }
+
+func TestValidateCountsPlatformCharactersAndHashtagsStrictly(t *testing.T) {
+	profile := Profile{Name: X, MaxLength: 2, MaxHashtags: 1, Tone: Concise}
+	if got := Validate("😀x", profile, 0); len(got) == 0 || got[0].Code != "MAX_LENGTH" {
+		t.Fatalf("UTF-16 length violations = %v, want MAX_LENGTH", got)
+	}
+	if got := Validate("word#tag", Profile{Name: X, MaxLength: 100, MaxHashtags: 1}, 0); len(got) != 0 {
+		t.Fatalf("embedded #tag should not count as a hashtag: %v", got)
+	}
+	if got := Validate("#tag", Profile{Name: X, MaxLength: 100, MaxHashtags: 1}, 1); len(got) != 0 {
+		t.Fatalf("standalone hashtag rejected: %v", got)
+	}
+}

@@ -9,9 +9,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LibreTurtle/social-studio/internal/ai"
+	"github.com/LibreTurtle/social-studio/internal/config"
 	"github.com/LibreTurtle/social-studio/internal/db"
+	"github.com/LibreTurtle/social-studio/internal/generation"
 	"github.com/LibreTurtle/social-studio/internal/httpapi"
+	"github.com/LibreTurtle/social-studio/internal/ingestion"
 	"github.com/LibreTurtle/social-studio/internal/logging"
+	"github.com/LibreTurtle/social-studio/internal/post"
 )
 
 func main() {
@@ -24,7 +29,11 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	database, err := db.Connect(os.Getenv("DATABASE_URL"))
+	configuration, err := config.Load()
+	if err != nil {
+		return err
+	}
+	database, err := db.Connect(configuration.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -35,20 +44,30 @@ func run(logger *slog.Logger) error {
 	}()
 	logger.Info("database connection established")
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	posts := post.NewPostgresStore(database)
+	postService := post.NewService(posts, ingestion.NewReader(ingestion.NewHTTPFetcher(), ingestion.NewHTMLExtractor()))
+	aiGenerator, err := ai.NewGenerator(configuration.AI, logger)
+	if err != nil {
+		return err
 	}
+	generationService := generation.NewService(posts, aiGenerator, 15*time.Minute, 10000)
 	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           httpapi.NewServer(logger),
+		Addr:              ":" + configuration.Port,
+		Handler:           httpapi.NewServer(logger, httpapi.Dependencies{Posts: postService, Generations: generationService}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      maxGenerationResponseTime(configuration.AI),
 		IdleTimeout:       60 * time.Second,
 	}
 
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	return serveHTTP(signalContext, server, logger, stopSignals)
+}
+
+func maxGenerationResponseTime(settings ai.Settings) time.Duration {
+	const responseOverhead = 30 * time.Second
+	providerWindow := time.Duration(len(settings.Providers)) * settings.RequestTimeout
+	maximumAttempts := generation.MaxPreferences * generation.MaxGenerationAttempts
+	return time.Duration(maximumAttempts)*providerWindow + responseOverhead
 }

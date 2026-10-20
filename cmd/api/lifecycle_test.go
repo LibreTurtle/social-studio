@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/LibreTurtle/social-studio/internal/ai"
 )
 
 type fakeShutdownServer struct {
@@ -60,5 +62,12 @@ func TestShutdownErrorCanBeIdentified(t *testing.T) {
 	err := shutdownHTTPServer(server, time.Millisecond, logger)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestHTTPWriteTimeoutCoversAllCandidateProviderFallbacks(t *testing.T) {
+	settings := ai.Settings{Providers: make([]ai.ProviderSettings, 3), RequestTimeout: 20 * time.Second}
+	if got, want := maxGenerationResponseTime(settings), 570*time.Second; got != want {
+		t.Fatalf("write timeout = %s, want %s", got, want)
 	}
 }
