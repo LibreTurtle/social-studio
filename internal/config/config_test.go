@@ -89,6 +89,42 @@ func TestLoadFromRejectsInvalidDurationsAndProviderFlags(t *testing.T) {
 	}
 }
 
+func TestLoadFromBuildsOnlyConfiguredPublishingAdapters(t *testing.T) {
+	config, err := LoadFrom(lookup(map[string]string{
+		"DATABASE_URL":             "postgres://db.example/social_studio",
+		"X_PUBLISH_ENABLED":        "true",
+		"X_ACCESS_TOKEN":           "x-secret",
+		"LINKEDIN_PUBLISH_ENABLED": "true",
+		"LINKEDIN_ACCESS_TOKEN":    "li-secret",
+		"LINKEDIN_AUTHOR_URN":      "urn:li:person:member-1",
+		"LINKEDIN_API_VERSION":     "202610",
+		"TELEGRAM_PUBLISH_ENABLED": "true",
+		"TELEGRAM_BOT_TOKEN":       "telegram-secret",
+		"TELEGRAM_CHAT_ID":         "@channel",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.Publishing.X.Enabled || config.Publishing.X.AccessToken != "x-secret" ||
+		!config.Publishing.LinkedIn.Enabled || config.Publishing.LinkedIn.AuthorURN != "urn:li:person:member-1" ||
+		!config.Publishing.Telegram.Enabled || config.Publishing.Telegram.ChatID != "@channel" {
+		t.Fatalf("publishing configuration = %+v", config.Publishing)
+	}
+}
+
+func TestLoadFromRequiresCompleteConfigurationForEnabledPublisher(t *testing.T) {
+	tests := []map[string]string{
+		{"DATABASE_URL": "postgres://db.example/social_studio", "X_PUBLISH_ENABLED": "true"},
+		{"DATABASE_URL": "postgres://db.example/social_studio", "LINKEDIN_PUBLISH_ENABLED": "true", "LINKEDIN_ACCESS_TOKEN": "token"},
+		{"DATABASE_URL": "postgres://db.example/social_studio", "TELEGRAM_PUBLISH_ENABLED": "true", "TELEGRAM_BOT_TOKEN": "token"},
+	}
+	for _, values := range tests {
+		if _, err := LoadFrom(lookup(values)); err == nil {
+			t.Errorf("LoadFrom(%v) succeeded without required publisher settings", values)
+		}
+	}
+}
+
 func lookup(values map[string]string) func(string) (string, bool) {
 	return func(key string) (string, bool) {
 		value, ok := values[key]

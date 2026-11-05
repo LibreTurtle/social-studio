@@ -9,11 +9,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LibreTurtle/social-studio/internal/domain"
 	"github.com/LibreTurtle/social-studio/internal/generation"
 	"github.com/LibreTurtle/social-studio/internal/ingestion"
 	"github.com/LibreTurtle/social-studio/internal/post"
+	"github.com/LibreTurtle/social-studio/internal/publishing"
+	"github.com/LibreTurtle/social-studio/internal/variant"
 )
 
 type postServiceFake struct {
@@ -74,6 +77,38 @@ type generationServiceFake struct {
 	result    generation.Result
 	candidate generation.Candidate
 	err       error
+}
+
+type variantServiceFake struct {
+	value     variant.Variant
+	listed    []variant.Variant
+	status    domain.VariantStatus
+	limit     int
+	offset    int
+	version   int64
+	content   string
+	operation string
+	err       error
+}
+
+func (fake *variantServiceFake) Get(_ context.Context, _ string) (variant.Variant, error) {
+	return fake.value, fake.err
+}
+func (fake *variantServiceFake) ListByPost(_ context.Context, _ string, status domain.VariantStatus, limit, offset int) ([]variant.Variant, error) {
+	fake.status, fake.limit, fake.offset = status, limit, offset
+	return fake.listed, fake.err
+}
+func (fake *variantServiceFake) UpdateContent(_ context.Context, _ string, version int64, content string) (variant.Variant, error) {
+	fake.operation, fake.version, fake.content = "edit", version, content
+	return fake.value, fake.err
+}
+func (fake *variantServiceFake) Approve(_ context.Context, _ string, version int64) (variant.Variant, error) {
+	fake.operation, fake.version = "approve", version
+	return fake.value, fake.err
+}
+func (fake *variantServiceFake) Reject(_ context.Context, _ string, version int64) (variant.Variant, error) {
+	fake.operation, fake.version = "reject", version
+	return fake.value, fake.err
 }
 
 func (fake *generationServiceFake) Generate(_ context.Context, request generation.Request) (generation.Result, error) {
@@ -228,7 +263,7 @@ func TestAccessLogRecoversFromPanicWithoutLoggingPanicValue(t *testing.T) {
 }
 
 func TestGenerationResponsesDoNotExposeAIProviderOrModel(t *testing.T) {
-	candidate := generation.Candidate{ID: "candidate-1", Content: "generated", Provider: "internal-provider-name"}
+	candidate := generation.Candidate{ID: "candidate-1", Content: "generated"}
 	fake := &generationServiceFake{
 		result:    generation.Result{ID: "session-1", Candidates: []generation.Candidate{candidate}},
 		candidate: candidate,
@@ -245,9 +280,142 @@ func TestGenerationResponsesDoNotExposeAIProviderOrModel(t *testing.T) {
 		if response.Code < 200 || response.Code >= 300 {
 			t.Fatalf("%s %s returned %d: %s", test.method, test.path, response.Code, response.Body.String())
 		}
-		if strings.Contains(response.Body.String(), "internal-provider-name") || strings.Contains(response.Body.String(), `"provider"`) || strings.Contains(response.Body.String(), `"model"`) {
+		if strings.Contains(response.Body.String(), `"provider"`) || strings.Contains(response.Body.String(), `"model"`) {
 			t.Errorf("%s %s exposed internal AI implementation details: %s", test.method, test.path, response.Body.String())
 		}
+	}
+}
+
+func TestVariantReviewEndpoints(t *testing.T) {
+	variantValue := variant.Variant{
+		ID: "019a0000-0000-7000-8000-000000000001", PostID: "019a0000-0000-7000-8000-000000000002",
+		Platform: domain.PlatformX, Content: "A draft", Status: domain.VariantStatusDraft,
+		CreatedAt: time.Date(2026, time.October, 21, 0, 0, 0, 0, time.UTC), Version: 1,
+	}
+	fake := &variantServiceFake{value: variantValue, listed: []variant.Variant{variantValue}}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Variants: fake})
+	for _, test := range []struct {
+		method, path, body, operation string
+	}{
+		{http.MethodGet, "/api/v1/posts/019a0000-0000-7000-8000-000000000002/variants?status=DRAFT&limit=20&offset=10", "", "list"},
+		{http.MethodGet, "/api/v1/variants/019a0000-0000-7000-8000-000000000001", "", "get"},
+		{http.MethodPatch, "/api/v1/variants/019a0000-0000-7000-8000-000000000001", `{"version":1,"content":"A revised draft"}`, "edit"},
+		{http.MethodPost, "/api/v1/variants/019a0000-0000-7000-8000-000000000001/approve", `{"version":1}`, "approve"},
+		{http.MethodPost, "/api/v1/variants/019a0000-0000-7000-8000-000000000001/reject", `{"version":1}`, "reject"},
+	} {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(test.method, test.path, strings.NewReader(test.body)))
+		if response.Code < 200 || response.Code >= 300 {
+			t.Fatalf("%s %s returned %d: %s", test.method, test.path, response.Code, response.Body.String())
+		}
+		if test.operation != "list" && test.operation != "get" && fake.operation != test.operation {
+			t.Errorf("%s %s operation = %q, want %q", test.method, test.path, fake.operation, test.operation)
+		}
+		if test.operation == "list" && (fake.status != domain.VariantStatusDraft || fake.limit != 20 || fake.offset != 10) {
+			t.Errorf("list filter = %q, limit %d, offset %d", fake.status, fake.limit, fake.offset)
+		}
+		if test.operation == "edit" && (fake.version != 1 || fake.content != "A revised draft") {
+			t.Errorf("edit request = version %d, content %q", fake.version, fake.content)
+		}
+	}
+}
+
+func TestVariantReviewEndpointMapsStaleVersionToConflict(t *testing.T) {
+	fake := &variantServiceFake{err: variant.ErrVersionConflict}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Variants: fake})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/variants/019a0000-0000-7000-8000-000000000001/approve", strings.NewReader(`{"version":2}`)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", response.Code, response.Body.String())
+	}
+}
+
+type publishingServiceFake struct {
+	schedule publishing.Schedule
+	attempt  publishing.Attempt
+	err      error
+	created  bool
+	called   bool
+}
+
+func (fake *publishingServiceFake) CreateSchedule(_ context.Context, variantID string, scheduledAt time.Time) (publishing.Schedule, error) {
+	fake.created = true
+	fake.schedule = publishing.Schedule{ID: "019a0000-0000-7000-8000-000000000010", VariantID: variantID, ScheduledAt: scheduledAt, Status: domain.ScheduleStatusPending}
+	return fake.schedule, fake.err
+}
+
+func (fake *publishingServiceFake) Publish(_ context.Context, scheduleID string) (publishing.Attempt, error) {
+	fake.called = true
+	fake.attempt.ScheduleID = scheduleID
+	return fake.attempt, fake.err
+}
+
+func TestScheduleAndPublishEndpoints(t *testing.T) {
+	fake := &publishingServiceFake{attempt: publishing.Attempt{Status: domain.PublishAttemptStatusSuccess, ExternalPostID: "remote-1", IdempotencyKey: "internal-key"}}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Publishing: fake})
+	scheduledAt := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	create := httptest.NewRecorder()
+	server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/v1/schedules", strings.NewReader(`{"variant_id":"019a0000-0000-7000-8000-000000000001","scheduled_at":"`+scheduledAt+`"}`)))
+	if create.Code != http.StatusCreated || !fake.created {
+		t.Fatalf("create schedule status=%d called=%t body=%s", create.Code, fake.created, create.Body.String())
+	}
+	publish := httptest.NewRecorder()
+	server.ServeHTTP(publish, httptest.NewRequest(http.MethodPost, "/api/v1/schedules/019a0000-0000-7000-8000-000000000010/publish", nil))
+	if publish.Code != http.StatusOK || !fake.called || !strings.Contains(publish.Body.String(), "remote-1") || strings.Contains(publish.Body.String(), "internal-key") || strings.Contains(publish.Body.String(), "idempotency_key") {
+		t.Fatalf("publish status=%d called=%t body=%s", publish.Code, fake.called, publish.Body.String())
+	}
+}
+
+func TestScheduleEndpointRefusesUnapprovedVariant(t *testing.T) {
+	fake := &publishingServiceFake{err: publishing.ErrNotApproved}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Publishing: fake})
+	response := httptest.NewRecorder()
+	body := `{"variant_id":"019a0000-0000-7000-8000-000000000001","scheduled_at":"2026-11-05T10:00:00Z"}`
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/schedules", strings.NewReader(body)))
+	if response.Code != http.StatusConflict || !fake.created {
+		t.Fatalf("status=%d service-called=%t body=%s", response.Code, fake.created, response.Body.String())
+	}
+}
+
+func TestScheduleEndpointReturnsUnavailableWithoutPlatformPublisher(t *testing.T) {
+	fake := &publishingServiceFake{err: publishing.ErrPublisherUnavailable}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Publishing: fake})
+	response := httptest.NewRecorder()
+	body := `{"variant_id":"019a0000-0000-7000-8000-000000000001","scheduled_at":"2026-11-05T10:00:00Z"}`
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/schedules", strings.NewReader(body)))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestScheduleEndpointRejectsAnotherSlotForSameVariant(t *testing.T) {
+	fake := &publishingServiceFake{err: publishing.ErrAlreadyScheduled}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Publishing: fake})
+	response := httptest.NewRecorder()
+	body := `{"variant_id":"019a0000-0000-7000-8000-000000000001","scheduled_at":"2026-11-05T10:00:00Z"}`
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/schedules", strings.NewReader(body)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestPublishEndpointReturnsAcceptedForUnknownProviderOutcome(t *testing.T) {
+	fake := &publishingServiceFake{err: publishing.ErrUncertain}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Publishing: fake})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/schedules/019a0000-0000-7000-8000-000000000010/publish", nil))
+	if response.Code != http.StatusAccepted || strings.Contains(response.Body.String(), "provider body") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestScheduleEndpointRejectsInvalidSlot(t *testing.T) {
+	fake := &publishingServiceFake{}
+	server := NewServer(slog.New(slog.NewJSONHandler(io.Discard, nil)), Dependencies{Publishing: fake})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/schedules", strings.NewReader(`{"variant_id":"019a0000-0000-7000-8000-000000000001","scheduled_at":"tomorrow"}`)))
+	if response.Code != http.StatusBadRequest || fake.created {
+		t.Fatalf("status=%d called=%t body=%s", response.Code, fake.created, response.Body.String())
 	}
 }
 

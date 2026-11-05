@@ -17,6 +17,8 @@ import (
 	"github.com/LibreTurtle/social-studio/internal/ingestion"
 	"github.com/LibreTurtle/social-studio/internal/logging"
 	"github.com/LibreTurtle/social-studio/internal/post"
+	"github.com/LibreTurtle/social-studio/internal/publishing"
+	"github.com/LibreTurtle/social-studio/internal/variant"
 )
 
 func main() {
@@ -46,17 +48,22 @@ func run(logger *slog.Logger) error {
 
 	posts := post.NewPostgresStore(database)
 	postService := post.NewService(posts, ingestion.NewReader(ingestion.NewHTTPFetcher(), ingestion.NewHTMLExtractor()))
+	variantService := variant.NewService(variant.NewPostgresStore(database))
 	aiGenerator, err := ai.NewGenerator(configuration.AI, logger)
 	if err != nil {
 		return err
 	}
-	generationService := generation.NewService(posts, aiGenerator, 15*time.Minute, 10000)
+	generationService := generation.NewService(posts, aiGenerator, variantService, 15*time.Minute, 10000)
+	providerHTTPClient := publishing.NewHTTPClient()
+	defer providerHTTPClient.CloseIdleConnections()
+	publishers := publishing.NewPublishers(configuration.Publishing, providerHTTPClient)
+	publishingService := publishing.NewService(publishing.NewPostgresStore(database), publishers, logger)
 	server := &http.Server{
 		Addr:              ":" + configuration.Port,
-		Handler:           httpapi.NewServer(logger, httpapi.Dependencies{Posts: postService, Generations: generationService}),
+		Handler:           httpapi.NewServer(logger, httpapi.Dependencies{Posts: postService, Generations: generationService, Variants: variantService, Publishing: publishingService}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      maxGenerationResponseTime(configuration.AI),
+		WriteTimeout:      max(maxGenerationResponseTime(configuration.AI), 50*time.Second),
 		IdleTimeout:       60 * time.Second,
 	}
 

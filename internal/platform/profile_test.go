@@ -47,3 +47,19 @@ func TestValidateCountsPlatformCharactersAndHashtagsStrictly(t *testing.T) {
 		t.Fatalf("standalone hashtag rejected: %v", got)
 	}
 }
+
+func TestValidateContentEnforcesHardLimitsWithoutExactHashtagTarget(t *testing.T) {
+	profile := Profile{Name: X, MaxLength: 10, MaxHashtags: 1}
+	if got := ValidateContent("Hello #Go", profile); len(got) != 0 {
+		t.Fatalf("valid edited content rejected: %v", got)
+	}
+	if got := ValidateContent("12345678901", profile); len(got) != 1 || got[0].Code != "MAX_LENGTH" {
+		t.Fatalf("overlength content violations = %v", got)
+	}
+	if got := ValidateContent("#one #two", profile); len(got) != 1 || got[0].Code != "MAX_HASHTAGS" {
+		t.Fatalf("too many hashtags violations = %v", got)
+	}
+	if got := ValidateContent(" \t", profile); len(got) != 1 || got[0].Code != "CONTENT_REQUIRED" {
+		t.Fatalf("blank content violations = %v", got)
+	}
+}

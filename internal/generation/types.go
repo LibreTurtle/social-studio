@@ -9,6 +9,7 @@ import (
 	"github.com/LibreTurtle/social-studio/internal/domain"
 	"github.com/LibreTurtle/social-studio/internal/platform"
 	"github.com/LibreTurtle/social-studio/internal/post"
+	"github.com/LibreTurtle/social-studio/internal/variant"
 )
 
 var (
@@ -39,7 +40,10 @@ type Candidate struct {
 	ID         string               `json:"id"`
 	Platform   domain.Platform      `json:"platform"`
 	Content    string               `json:"content"`
-	Provider   string               `json:"-"`
+	Status     domain.VariantStatus `json:"status"`
+	CreatedAt  time.Time            `json:"created_at"`
+	UpdatedAt  time.Time            `json:"updated_at"`
+	Version    int64                `json:"version"`
 	Violations []platform.Violation `json:"violations"`
 }
 type Result struct {
@@ -54,4 +58,7 @@ type PostStore interface {
 }
 type ContentGenerator interface {
 	Generate(context.Context, ai.Prompt) (string, string, error)
+}
+type DraftCreator interface {
+	CreateDrafts(context.Context, string, []variant.Draft) ([]variant.Variant, error)
 }

@@ -50,6 +50,20 @@ type Violation struct {
 var hashtagPattern = regexp.MustCompile(`#\p{L}[\p{L}\p{N}_]*`)
 
 func Validate(content string, profile Profile, requiredHashtags int) []Violation {
+	violations := ValidateContent(content, profile)
+	if len(violations) != 0 && violations[0].Code == "CONTENT_REQUIRED" {
+		return violations
+	}
+	count := countHashtags(content)
+	if count != requiredHashtags {
+		violations = append(violations, Violation{Code: "WRONG_HASHTAG_COUNT", Message: fmt.Sprintf("Content contains %d hashtags; requested count is %d", count, requiredHashtags)})
+	}
+	return violations
+}
+
+// ValidateContent enforces the platform's hard content limits without requiring
+// an exact hashtag count, which is appropriate for human-edited variants.
+func ValidateContent(content string, profile Profile) []Violation {
 	if len([]rune(content)) == 0 || allWhitespace(content) {
 		return []Violation{{Code: "CONTENT_REQUIRED", Message: "Generated content must not be blank"}}
 	}
@@ -58,6 +72,14 @@ func Validate(content string, profile Profile, requiredHashtags int) []Violation
 	if length > profile.MaxLength {
 		violations = append(violations, Violation{Code: "MAX_LENGTH", Message: fmt.Sprintf("Content has %d characters; maximum allowed is %d", length, profile.MaxLength)})
 	}
+	count := countHashtags(content)
+	if count > profile.MaxHashtags {
+		violations = append(violations, Violation{Code: "MAX_HASHTAGS", Message: fmt.Sprintf("Content has %d hashtags; maximum allowed is %d", count, profile.MaxHashtags)})
+	}
+	return violations
+}
+
+func countHashtags(content string) int {
 	count := 0
 	for _, match := range hashtagPattern.FindAllStringIndex(content, -1) {
 		if match[0] > 0 && isASCIIWord(content[match[0]-1]) {
@@ -65,13 +87,7 @@ func Validate(content string, profile Profile, requiredHashtags int) []Violation
 		}
 		count++
 	}
-	if count > profile.MaxHashtags {
-		violations = append(violations, Violation{Code: "MAX_HASHTAGS", Message: fmt.Sprintf("Content has %d hashtags; maximum allowed is %d", count, profile.MaxHashtags)})
-	}
-	if count != requiredHashtags {
-		violations = append(violations, Violation{Code: "WRONG_HASHTAG_COUNT", Message: fmt.Sprintf("Content contains %d hashtags; requested count is %d", count, requiredHashtags)})
-	}
-	return violations
+	return count
 }
 
 func isASCIIWord(character byte) bool {
