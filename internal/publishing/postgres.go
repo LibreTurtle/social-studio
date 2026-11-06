@@ -161,14 +161,15 @@ func (store *PostgresStore) Claim(ctx context.Context, scheduleID string) (Claim
 		return Claim{}, ErrNotDue
 	}
 	claim.IdempotencyKey = idempotencyKey(claim.Schedule.VariantID, claim.Schedule.ScheduledAt)
-	_, err = tx.ExecContext(ctx, `
-		UPDATE schedules SET status = 'PROCESSING', updated_at = NOW(), version = version + 1
-		WHERE id = $1 AND status = 'PENDING'`, scheduleID)
+	err = tx.QueryRowContext(ctx, `
+		UPDATE schedules SET status = 'PROCESSING', processing_started_at = NOW(), dispatch_started_at = NULL,
+		       updated_at = NOW(), version = version + 1
+		WHERE id = $1 AND status = 'PENDING'
+		RETURNING updated_at, version`, scheduleID).Scan(&claim.Schedule.UpdatedAt, &claim.Schedule.Version)
 	if err != nil {
 		return Claim{}, fmt.Errorf("mark schedule processing: %w", err)
 	}
 	claim.Schedule.Status = domain.ScheduleStatusProcessing
-	claim.Schedule.Version++
 	if err := tx.Commit(); err != nil {
 		return Claim{}, fmt.Errorf("commit publishing claim: %w", err)
 	}
@@ -181,9 +182,14 @@ func (store *PostgresStore) Complete(ctx context.Context, claim Claim, result Pu
 		return Attempt{}, fmt.Errorf("begin publish completion transaction: %w", err)
 	}
 	defer tx.Rollback()
-	attempt, err := insertAttempt(ctx, tx, claim, domain.PublishAttemptStatusSuccess, result.ExternalPostID, "")
+	attempt, err := scanAttempt(tx.QueryRowContext(ctx, `
+		UPDATE publish_attempts
+		SET status = 'SUCCESS', external_post_id = $2, error_message = NULL
+		WHERE id = $1 AND status IN ('PROCESSING', 'OUTCOME_UNKNOWN')
+		RETURNING id::text, schedule_id::text, variant_id::text, idempotency_key, status::text,
+		          external_post_id, error_message, attempted_at`, claim.AttemptID, result.ExternalPostID))
 	if err != nil {
-		return Attempt{}, err
+		return Attempt{}, fmt.Errorf("complete publish attempt: %w", err)
 	}
 	if err := updateOne(ctx, tx, `UPDATE schedules SET status = 'COMPLETED', updated_at = NOW(), version = version + 1 WHERE id = $1 AND status = 'PROCESSING'`, claim.Schedule.ID, "complete schedule"); err != nil {
 		return Attempt{}, err
@@ -203,9 +209,19 @@ func (store *PostgresStore) Fail(ctx context.Context, claim Claim, reason Failur
 		return Attempt{}, fmt.Errorf("begin publish failure transaction: %w", err)
 	}
 	defer tx.Rollback()
-	attempt, err := insertAttempt(ctx, tx, claim, domain.PublishAttemptStatusFailed, "", string(reason))
+	var attempt Attempt
+	if claim.AttemptID == "" {
+		attempt, err = insertAttempt(ctx, tx, claim, domain.PublishAttemptStatusFailed, "", string(reason))
+	} else {
+		attempt, err = scanAttempt(tx.QueryRowContext(ctx, `
+			UPDATE publish_attempts
+			SET status = 'FAILED', error_message = $2
+			WHERE id = $1 AND status IN ('PROCESSING', 'OUTCOME_UNKNOWN')
+			RETURNING id::text, schedule_id::text, variant_id::text, idempotency_key, status::text,
+			          external_post_id, error_message, attempted_at`, claim.AttemptID, string(reason)))
+	}
 	if err != nil {
-		return Attempt{}, err
+		return Attempt{}, fmt.Errorf("record publish failure: %w", err)
 	}
 	if err := updateOne(ctx, tx, `UPDATE schedules SET status = 'FAILED', updated_at = NOW(), version = version + 1 WHERE id = $1 AND status = 'PROCESSING'`, claim.Schedule.ID, "fail schedule"); err != nil {
 		return Attempt{}, err
@@ -224,7 +240,9 @@ func scanSchedule(row *sql.Row) (Schedule, error) {
 	return value, err
 }
 
-func scanAttempt(row *sql.Row) (Attempt, error) {
+type rowScanner interface{ Scan(...any) error }
+
+func scanAttempt(row rowScanner) (Attempt, error) {
 	var value Attempt
 	var status string
 	var externalPostID, message sql.NullString

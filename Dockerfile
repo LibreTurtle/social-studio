@@ -27,9 +27,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/api ./cmd/api \
     && GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/migrate ./cmd/migrate
+    go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/migrate ./cmd/migrate \
+    && GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/worker ./cmd/worker
 
-FROM alpine:3.24.2 AS runtime
+FROM alpine:3.24 AS runtime
 
 ARG SOURCE_REPOSITORY=local
 
@@ -43,6 +45,7 @@ LABEL org.opencontainers.image.source=${SOURCE_REPOSITORY}
 
 COPY --from=build --chown=10001:10001 /out/api /app/api
 COPY --from=build --chown=10001:10001 /out/migrate /app/migrate
+COPY --from=build --chown=10001:10001 /out/worker /app/worker
 COPY --chown=10001:10001 migrations/ /app/migrations/
 
 USER 10001:10001

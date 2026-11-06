@@ -135,6 +135,49 @@ services:
       start_period: 10s
       retries: 3
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SOURCE_REPOSITORY: "${SOURCE_REPOSITORY:-local}"
+    image: "${SOCIAL_STUDIO_IMAGE:-social-studio-api:local}"
+    pull_policy: build
+    entrypoint: ["/app/worker"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL:-postgresql://${DB_USER:-social_studio}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-social_studio}?sslmode=disable}"
+      X_PUBLISH_ENABLED: "${X_PUBLISH_ENABLED:-false}"
+      X_ACCESS_TOKEN: "${X_ACCESS_TOKEN:-}"
+      LINKEDIN_PUBLISH_ENABLED: "${LINKEDIN_PUBLISH_ENABLED:-false}"
+      LINKEDIN_ACCESS_TOKEN: "${LINKEDIN_ACCESS_TOKEN:-}"
+      LINKEDIN_AUTHOR_URN: "${LINKEDIN_AUTHOR_URN:-}"
+      LINKEDIN_API_VERSION: "${LINKEDIN_API_VERSION:-202610}"
+      TELEGRAM_PUBLISH_ENABLED: "${TELEGRAM_PUBLISH_ENABLED:-false}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      SCHEDULER_POLL_INTERVAL: "${SCHEDULER_POLL_INTERVAL:-2s}"
+      SCHEDULER_CLAIM_TIMEOUT: "${SCHEDULER_CLAIM_TIMEOUT:-1m}"
+      SCHEDULER_CONCURRENCY: "${SCHEDULER_CONCURRENCY:-4}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    pids_limit: 128
+    networks:
+      - database
+      - egress
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+
 volumes:
   postgres-data:
 

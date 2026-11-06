@@ -42,6 +42,7 @@ type ReviewService interface {
 type PublishingService interface {
 	CreateSchedule(context.Context, string, time.Time) (publishing.Schedule, error)
 	Publish(context.Context, string) (publishing.Attempt, error)
+	ListHistory(context.Context, publishing.HistoryRequest) (publishing.HistoryPage, error)
 }
 
 type Dependencies struct {
@@ -69,6 +70,7 @@ func NewServer(logger *slog.Logger, dependencies ...Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/variants/{variantID}/reject", server.rejectVariant)
 	mux.HandleFunc("POST /api/v1/schedules", server.createSchedule)
 	mux.HandleFunc("POST /api/v1/schedules/{scheduleID}/publish", server.publishSchedule)
+	mux.HandleFunc("GET /api/v1/publish-history", server.listPublishHistory)
 	mux.HandleFunc("GET /api/v1/generations/{sessionID}", server.getGeneration)
 	mux.HandleFunc("GET /api/v1/generations/{sessionID}/candidates", server.getCandidates)
 	mux.HandleFunc("POST /api/v1/generations/{sessionID}/selection", server.selectCandidate)

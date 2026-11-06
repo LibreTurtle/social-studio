@@ -42,6 +42,42 @@ func TestLoadFromAllowsApplicationWithoutConfiguredAIProviders(t *testing.T) {
 	}
 }
 
+func TestLoadFromUsesBoundedSchedulerDefaultsAndOverrides(t *testing.T) {
+	defaults, err := LoadFrom(lookup(map[string]string{"DATABASE_URL": "postgres://db.example/social_studio"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Scheduler.PollInterval <= 0 || defaults.Scheduler.ClaimTimeout <= 0 || defaults.Scheduler.Concurrency < 1 {
+		t.Fatalf("scheduler defaults are not bounded: %+v", defaults.Scheduler)
+	}
+	configured, err := LoadFrom(lookup(map[string]string{
+		"DATABASE_URL":            "postgres://db.example/social_studio",
+		"SCHEDULER_POLL_INTERVAL": "2s",
+		"SCHEDULER_CLAIM_TIMEOUT": "90s",
+		"SCHEDULER_CONCURRENCY":   "6",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.Scheduler.PollInterval.String() != "2s" || configured.Scheduler.ClaimTimeout.String() != "1m30s" || configured.Scheduler.Concurrency != 6 {
+		t.Fatalf("scheduler settings = %+v", configured.Scheduler)
+	}
+}
+
+func TestLoadFromRejectsInvalidSchedulerBounds(t *testing.T) {
+	for _, values := range []map[string]string{
+		{"DATABASE_URL": "postgres://db.example/social_studio", "SCHEDULER_POLL_INTERVAL": "0s"},
+		{"DATABASE_URL": "postgres://db.example/social_studio", "SCHEDULER_POLL_INTERVAL": "1ns"},
+		{"DATABASE_URL": "postgres://db.example/social_studio", "SCHEDULER_CLAIM_TIMEOUT": "nope"},
+		{"DATABASE_URL": "postgres://db.example/social_studio", "SCHEDULER_CLAIM_TIMEOUT": "48h"},
+		{"DATABASE_URL": "postgres://db.example/social_studio", "SCHEDULER_CONCURRENCY": "129"},
+	} {
+		if _, err := LoadFrom(lookup(values)); err == nil {
+			t.Errorf("LoadFrom(%v) accepted invalid scheduler settings", values)
+		}
+	}
+}
+
 func TestLoadFromAllowsProviderBaseURLOverrides(t *testing.T) {
 	config, err := LoadFrom(lookup(map[string]string{
 		"DATABASE_URL":        "postgres://db.example/social_studio",

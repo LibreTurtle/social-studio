@@ -18,6 +18,7 @@ var (
 	ErrAlreadyScheduled     = errors.New("variant already has a schedule")
 	ErrRejected             = errors.New("provider rejected publish request")
 	ErrUncertain            = errors.New("publish outcome is uncertain")
+	ErrClaimLost            = errors.New("publishing claim is no longer active")
 )
 
 type FailureReason string
@@ -49,6 +50,35 @@ type Attempt struct {
 	AttemptedAt    time.Time                   `json:"attempted_at"`
 }
 
+type AttemptCursor struct {
+	AttemptedAt time.Time
+	ID          string
+}
+
+type HistoryRequest struct {
+	VariantID  string
+	ScheduleID string
+	Limit      int
+	Cursor     string
+}
+
+type HistoryFilter struct {
+	VariantID  string
+	ScheduleID string
+	Limit      int
+	Before     *AttemptCursor
+}
+
+type HistoryPage struct {
+	Attempts   []Attempt `json:"attempts"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+}
+
+type Recovery struct {
+	Requeued int64
+	Unknown  int64
+}
+
 type PublishCommand struct {
 	VariantID      string
 	ScheduleID     string
@@ -67,6 +97,7 @@ type Claim struct {
 	Platform        domain.Platform
 	Content         string
 	IdempotencyKey  string
+	AttemptID       string
 	ExistingAttempt *Attempt
 }
 
@@ -74,6 +105,11 @@ type Store interface {
 	GetForSchedule(context.Context, string, time.Time) (domain.Platform, domain.VariantStatus, *Schedule, error)
 	CreateSchedule(context.Context, string, time.Time) (Schedule, error)
 	Claim(context.Context, string) (Claim, error)
+	ClaimDue(context.Context, int) ([]Claim, error)
+	RecoverStale(context.Context, time.Duration) (Recovery, error)
+	StartDispatch(context.Context, Claim) (Attempt, error)
+	MarkOutcomeUnknown(context.Context, Claim) error
 	Complete(context.Context, Claim, PublishResult) (Attempt, error)
 	Fail(context.Context, Claim, FailureReason) (Attempt, error)
+	ListAttempts(context.Context, HistoryFilter) ([]Attempt, error)
 }

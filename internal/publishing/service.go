@@ -72,6 +72,13 @@ func (service *Service) Publish(ctx context.Context, scheduleID string) (Attempt
 	if claim.ExistingAttempt != nil {
 		return *claim.ExistingAttempt, nil
 	}
+	return service.PublishClaim(ctx, claim)
+}
+
+func (service *Service) PublishClaim(ctx context.Context, claim Claim) (Attempt, error) {
+	if claim.ExistingAttempt != nil {
+		return *claim.ExistingAttempt, nil
+	}
 	profile, supported := platform.DefaultProfiles()[claim.Platform]
 	if !supported || len(platform.ValidateContent(claim.Content, profile)) != 0 {
 		service.logger.WarnContext(ctx, "scheduled variant failed publishing validation", "request_id", middleware.RequestIDFromContext(ctx), "schedule_id", claim.Schedule.ID, "platform", claim.Platform, "error_category", "content_invalid")
@@ -90,6 +97,14 @@ func (service *Service) Publish(ctx context.Context, scheduleID string) (Attempt
 		}
 		return attempt, nil
 	}
+	attempt, err := service.store.StartDispatch(ctx, claim)
+	if errors.Is(err, ErrClaimLost) {
+		return Attempt{}, ErrInProgress
+	}
+	if err != nil {
+		return Attempt{}, fmt.Errorf("record publishing dispatch: %w", err)
+	}
+	claim.AttemptID = attempt.ID
 	result, publishErr := publisher.Publish(ctx, PublishCommand{
 		VariantID: claim.Schedule.VariantID, ScheduleID: claim.Schedule.ID,
 		Content: claim.Content, IdempotencyKey: claim.IdempotencyKey,
@@ -104,14 +119,20 @@ func (service *Service) Publish(ctx context.Context, scheduleID string) (Attempt
 			return attempt, nil
 		}
 		service.logger.ErrorContext(ctx, "social provider publish outcome is uncertain", "request_id", middleware.RequestIDFromContext(ctx), "schedule_id", claim.Schedule.ID, "platform", claim.Platform, "error_category", "provider_outcome_unknown")
+		if markErr := service.store.MarkOutcomeUnknown(ctx, claim); markErr != nil {
+			service.logger.ErrorContext(ctx, "unknown publish outcome could not be recorded", "request_id", middleware.RequestIDFromContext(ctx), "schedule_id", claim.Schedule.ID, "platform", claim.Platform, "error_category", "history_persistence_failed")
+		}
 		return Attempt{}, ErrUncertain
 	}
 	if strings.TrimSpace(result.ExternalPostID) == "" {
 		service.logger.ErrorContext(ctx, "social provider returned no post identifier", "request_id", middleware.RequestIDFromContext(ctx), "schedule_id", claim.Schedule.ID, "platform", claim.Platform, "error_category", "provider_response_invalid")
+		if markErr := service.store.MarkOutcomeUnknown(ctx, claim); markErr != nil {
+			service.logger.ErrorContext(ctx, "unknown publish outcome could not be recorded", "request_id", middleware.RequestIDFromContext(ctx), "schedule_id", claim.Schedule.ID, "platform", claim.Platform, "error_category", "history_persistence_failed")
+		}
 		return Attempt{}, ErrUncertain
 	}
 	result.ExternalPostID = strings.TrimSpace(result.ExternalPostID)
-	attempt, err := service.store.Complete(ctx, claim, result)
+	attempt, err = service.store.Complete(ctx, claim, result)
 	if err != nil {
 		// The provider may already have published. Leave the claim in PROCESSING to prevent a duplicate.
 		service.logger.ErrorContext(ctx, "publish result could not be persisted", "request_id", middleware.RequestIDFromContext(ctx), "schedule_id", claim.Schedule.ID, "platform", claim.Platform, "error_category", "result_persistence_failed")

@@ -19,16 +19,21 @@ import (
 )
 
 type fakeStore struct {
-	mu         sync.Mutex
-	claim      Claim
-	claimErr   error
-	complete   int
-	fail       int
-	failReason FailureReason
-	platform   domain.Platform
-	status     domain.VariantStatus
-	creates    int
-	existing   *Schedule
+	mu              sync.Mutex
+	claim           Claim
+	claimErr        error
+	complete        int
+	fail            int
+	started         int
+	unknown         int
+	failReason      FailureReason
+	platform        domain.Platform
+	status          domain.VariantStatus
+	creates         int
+	existing        *Schedule
+	historyAttempts []Attempt
+	historyFilter   HistoryFilter
+	historyErr      error
 }
 
 func (store *fakeStore) CreateSchedule(context.Context, string, time.Time) (Schedule, error) {
@@ -43,6 +48,22 @@ func (store *fakeStore) Claim(context.Context, string) (Claim, error) {
 	defer store.mu.Unlock()
 	return store.claim, store.claimErr
 }
+func (store *fakeStore) ClaimDue(context.Context, int) ([]Claim, error) { return nil, nil }
+func (store *fakeStore) RecoverStale(context.Context, time.Duration) (Recovery, error) {
+	return Recovery{}, nil
+}
+func (store *fakeStore) StartDispatch(_ context.Context, claim Claim) (Attempt, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.started++
+	return Attempt{ID: testID(12), ScheduleID: claim.Schedule.ID, VariantID: claim.Schedule.VariantID, IdempotencyKey: claim.IdempotencyKey, Status: domain.PublishAttemptStatusProcessing, AttemptedAt: time.Now().UTC()}, nil
+}
+func (store *fakeStore) MarkOutcomeUnknown(context.Context, Claim) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.unknown++
+	return nil
+}
 func (store *fakeStore) Complete(context.Context, Claim, PublishResult) (Attempt, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -55,6 +76,10 @@ func (store *fakeStore) Fail(_ context.Context, _ Claim, reason FailureReason) (
 	store.fail++
 	store.failReason = reason
 	return Attempt{ScheduleID: testID(10), Status: domain.PublishAttemptStatusFailed, ErrorMessage: string(reason)}, nil
+}
+func (store *fakeStore) ListAttempts(_ context.Context, filter HistoryFilter) ([]Attempt, error) {
+	store.historyFilter = filter
+	return store.historyAttempts, store.historyErr
 }
 
 type fakePublisher struct {
@@ -86,8 +111,8 @@ func TestPublishLeavesAmbiguousProviderOutcomeClaimed(t *testing.T) {
 	provider := &fakePublisher{err: ErrUncertain}
 	service := newTestService(store, map[domain.Platform]SocialPublisher{domain.PlatformX: provider})
 	_, err := service.Publish(context.Background(), testID(10))
-	if !errors.Is(err, ErrUncertain) || store.complete != 0 || store.fail != 0 {
-		t.Fatalf("Publish() error=%v, complete=%d fail=%d", err, store.complete, store.fail)
+	if !errors.Is(err, ErrUncertain) || store.complete != 0 || store.fail != 0 || store.unknown != 1 {
+		t.Fatalf("Publish() error=%v, complete=%d fail=%d unknown=%d", err, store.complete, store.fail, store.unknown)
 	}
 }
 

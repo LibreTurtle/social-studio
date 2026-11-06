@@ -15,7 +15,21 @@ type Config struct {
 	Port, DatabaseURL string
 	AI                ai.Settings
 	Publishing        PublishingSettings
+	Scheduler         SchedulerSettings
 }
+
+type SchedulerSettings struct {
+	PollInterval time.Duration
+	ClaimTimeout time.Duration
+	Concurrency  int
+}
+
+const (
+	minimumSchedulerPollInterval = 100 * time.Millisecond
+	maximumSchedulerPollInterval = 5 * time.Minute
+	minimumSchedulerClaimTimeout = 10 * time.Second
+	maximumSchedulerClaimTimeout = 24 * time.Hour
+)
 
 type PublishingSettings struct {
 	X        XPublishingSettings
@@ -68,6 +82,19 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, errors.New("AI_MAX_OUTPUT_TOKENS must be positive")
 	}
 	config.AI.RequestTimeout, config.AI.MaxOutputTokens = timeout, maxOutput
+	pollInterval, err := time.ParseDuration(get("SCHEDULER_POLL_INTERVAL", "2s"))
+	if err != nil || pollInterval < minimumSchedulerPollInterval || pollInterval > maximumSchedulerPollInterval {
+		return Config{}, errors.New("SCHEDULER_POLL_INTERVAL must be between 100ms and 5m")
+	}
+	claimTimeout, err := time.ParseDuration(get("SCHEDULER_CLAIM_TIMEOUT", "1m"))
+	if err != nil || claimTimeout < minimumSchedulerClaimTimeout || claimTimeout > maximumSchedulerClaimTimeout {
+		return Config{}, errors.New("SCHEDULER_CLAIM_TIMEOUT must be between 10s and 24h")
+	}
+	concurrency, err := strconv.Atoi(get("SCHEDULER_CONCURRENCY", "4"))
+	if err != nil || concurrency < 1 || concurrency > 128 {
+		return Config{}, errors.New("SCHEDULER_CONCURRENCY must be between 1 and 128")
+	}
+	config.Scheduler = SchedulerSettings{PollInterval: pollInterval, ClaimTimeout: claimTimeout, Concurrency: concurrency}
 	providers := []struct{ name, enabledKey, keyKey, modelKey, baseKey, baseURL, model string }{
 		{ai.ProviderGroq, "GROQ_ENABLED", "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b"},
 		{ai.ProviderGemini, "GEMINI_ENABLED", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta", "gemini-3.5-flash-lite"},

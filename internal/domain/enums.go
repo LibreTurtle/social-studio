@@ -89,13 +89,15 @@ func (value ScheduleStatus) Valid() bool {
 type PublishAttemptStatus string
 
 const (
-	PublishAttemptStatusSuccess PublishAttemptStatus = "SUCCESS"
-	PublishAttemptStatusFailed  PublishAttemptStatus = "FAILED"
+	PublishAttemptStatusProcessing     PublishAttemptStatus = "PROCESSING"
+	PublishAttemptStatusSuccess        PublishAttemptStatus = "SUCCESS"
+	PublishAttemptStatusFailed         PublishAttemptStatus = "FAILED"
+	PublishAttemptStatusOutcomeUnknown PublishAttemptStatus = "OUTCOME_UNKNOWN"
 )
 
 func (value PublishAttemptStatus) Valid() bool {
 	switch value {
-	case PublishAttemptStatusSuccess, PublishAttemptStatusFailed:
+	case PublishAttemptStatusProcessing, PublishAttemptStatusSuccess, PublishAttemptStatusFailed, PublishAttemptStatusOutcomeUnknown:
 		return true
 	default:
 		return false

@@ -100,6 +100,11 @@ func TestPostgresStoreClaimsConcurrentPublishOnceAndPersistsSuccess(t *testing.T
 			t.Fatalf("competing claim error = %v, want ErrInProgress", claimErr)
 		}
 	}
+	started, err := store.StartDispatch(ctx, claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim.AttemptID = started.ID
 
 	attempt, err := store.Complete(ctx, claim, PublishResult{ExternalPostID: "remote-post-1"})
 	if err != nil {
@@ -122,6 +127,62 @@ func TestPostgresStoreClaimsConcurrentPublishOnceAndPersistsSuccess(t *testing.T
 	repeatedSchedule, err := store.CreateSchedule(ctx, variantID, schedule.ScheduledAt)
 	if err != nil || repeatedSchedule.ID != schedule.ID || repeatedSchedule.Status != domain.ScheduleStatusCompleted {
 		t.Fatalf("repeated completed schedule = %+v, %v; want existing schedule %q", repeatedSchedule, err, schedule.ID)
+	}
+}
+
+func TestPostgresStoreRecoversOnlyClaimsThatNeverStartedDispatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	database := newPublishingTestDatabase(t, ctx)
+	store := NewPostgresStore(database)
+
+	undispatchedVariant := insertPublishingTestVariant(t, ctx, database, "APPROVED", "safe to retry")
+	undispatchedSchedule, err := store.CreateSchedule(ctx, undispatchedVariant, time.Now().UTC().Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := store.ClaimDue(ctx, 2)
+	if err != nil || len(claims) != 1 || claims[0].Schedule.ID != undispatchedSchedule.ID {
+		t.Fatalf("ClaimDue() = %d claims, %v", len(claims), err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE schedules SET processing_started_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, undispatchedSchedule.ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.RecoverStale(ctx, time.Minute)
+	if err != nil || recovered.Requeued != 1 || recovered.Unknown != 0 {
+		t.Fatalf("RecoverStale() = %+v, %v; want one safe requeue", recovered, err)
+	}
+	claims, err = store.ClaimDue(ctx, 2)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("reclaimed due schedule count=%d error=%v", len(claims), err)
+	}
+
+	dispatchedVariant := insertPublishingTestVariant(t, ctx, database, "APPROVED", "never automatically repeat")
+	dispatchedSchedule, err := store.CreateSchedule(ctx, dispatchedVariant, time.Now().UTC().Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err = store.ClaimDue(ctx, 2)
+	if err != nil || len(claims) != 1 || claims[0].Schedule.ID != dispatchedSchedule.ID {
+		t.Fatalf("ClaimDue() for second schedule = %d claims, %v", len(claims), err)
+	}
+	started, err := store.StartDispatch(ctx, claims[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE schedules SET dispatch_started_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, dispatchedSchedule.ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err = store.RecoverStale(ctx, time.Minute)
+	if err != nil || recovered.Requeued != 0 || recovered.Unknown != 1 {
+		t.Fatalf("RecoverStale() after dispatch = %+v, %v; want one unknown outcome", recovered, err)
+	}
+	if _, err := store.Claim(ctx, dispatchedSchedule.ID); !errors.Is(err, ErrInProgress) {
+		t.Fatalf("claim of dispatched unknown schedule error=%v, want ErrInProgress", err)
+	}
+	history, err := store.ListAttempts(ctx, HistoryFilter{VariantID: dispatchedVariant, Limit: 10})
+	if err != nil || len(history) != 1 || history[0].ID != started.ID || history[0].Status != domain.PublishAttemptStatusOutcomeUnknown {
+		t.Fatalf("unknown publish history = %+v, %v", history, err)
 	}
 }
 
@@ -172,9 +233,9 @@ func newPublishingTestDatabase(t *testing.T, ctx context.Context) *sql.DB {
 		`CREATE TYPE social_platform AS ENUM ('X', 'LINKEDIN', 'TELEGRAM')`,
 		`CREATE TYPE variant_status AS ENUM ('DRAFT', 'APPROVED', 'REJECTED', 'PUBLISHED')`,
 		`CREATE TYPE schedule_status AS ENUM ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')`,
-		`CREATE TYPE publish_attempt_status AS ENUM ('SUCCESS', 'FAILED')`,
+		`CREATE TYPE publish_attempt_status AS ENUM ('PROCESSING', 'SUCCESS', 'FAILED', 'OUTCOME_UNKNOWN')`,
 		`CREATE TABLE variants (id uuid PRIMARY KEY, platform social_platform NOT NULL, content text NOT NULL, status variant_status NOT NULL, updated_at timestamptz NOT NULL, version bigint NOT NULL)`,
-		`CREATE TABLE schedules (id uuid PRIMARY KEY DEFAULT uuidv7(), variant_id uuid NOT NULL REFERENCES variants(id), scheduled_at timestamptz NOT NULL, status schedule_status NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), version bigint NOT NULL DEFAULT 1, UNIQUE (variant_id, scheduled_at))`,
+		`CREATE TABLE schedules (id uuid PRIMARY KEY DEFAULT uuidv7(), variant_id uuid NOT NULL REFERENCES variants(id), scheduled_at timestamptz NOT NULL, status schedule_status NOT NULL, processing_started_at timestamptz, dispatch_started_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), version bigint NOT NULL DEFAULT 1, UNIQUE (variant_id, scheduled_at))`,
 		`CREATE TABLE publish_attempts (id uuid PRIMARY KEY DEFAULT uuidv7(), schedule_id uuid NOT NULL REFERENCES schedules(id), variant_id uuid NOT NULL REFERENCES variants(id), idempotency_key text NOT NULL UNIQUE, status publish_attempt_status NOT NULL, external_post_id text, error_message text, attempted_at timestamptz NOT NULL DEFAULT now())`,
 	}
 	for _, statement := range statements {

@@ -42,7 +42,8 @@ func TestEnumValuesMatchSupportedContracts(t *testing.T) {
 		{
 			name: "publish attempt status",
 			values: []bool{
-				PublishAttemptStatusSuccess.Valid(), PublishAttemptStatusFailed.Valid(),
+				PublishAttemptStatusProcessing.Valid(), PublishAttemptStatusSuccess.Valid(),
+				PublishAttemptStatusFailed.Valid(), PublishAttemptStatusOutcomeUnknown.Valid(),
 				PublishAttemptStatus("PENDING").Valid(),
 			},
 		},
